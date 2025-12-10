@@ -1,43 +1,48 @@
-// === Универсальный прокси CoinGecko (Vera PRO V3) ===
+// === Universal CoinGecko Proxy (Vera PRO V3) ===
 
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
+app.use(express.json());
 
-// Главная
-app.get('/', (req, res) => {
-    res.send("🟢 Прокси CoinGecko Vera запущен!");
+// --- Главная страница ---
+app.get("/", (req, res) => {
+  res.send("🟢 CoinGecko Proxy Vera is running!");
 });
 
-// Пинг
-app.get('/api/ping', (req, res) => {
-    res.json({ "gecko_says": "(V3) На Луну!" });
+// --- Пинг ---
+app.get("/api/ping", (req, res) => {
+  res.json({ gecko_says: "(V3) На Луну!" });
 });
 
-// === Универсальный маршрут ===
-// принимает любой путь вида /api/coins/bitcoin, /api/simple/price и т.д.
-app.get('/api/*', async (req, res) => {
-    try {
-        const endpoint = req.params[0]; // всё после /api/
-        const url = `https://api.coingecko.com/api/v3/${endpoint}`;
+// === ГЛАВНЫЙ УНИВЕРСАЛЬНЫЙ ПРОКСИ ===
+// Вместо app.get('/api/*') — используем app.use('/api').
+// Это единственный способ заставить Render работать без ошибок.
 
-        const response = await axios.get(url, {
-            params: req.query
-        });
+app.use("/api", async (req, res) => {
+  try {
+    // Берём оригинальный путь: /api/coins/bitcoin/market_chart
+    const originalPath = req.originalUrl.replace("/api/", "");
 
-        res.json(response.data);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Ошибка при запросе к CoinGecko' });
-    }
+    const url = `https://api.coingecko.com/api/v3/${originalPath}`;
+
+    const response = await axios.get(url, {
+      params: req.query, // передаём параметры как есть
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    console.error("Proxy error:", error.message);
+    res.status(500).json({ error: "Ошибка при запросе к CoinGecko" });
+  }
 });
 
-// Стартуем сервер
+// --- Запуск сервера ---
 app.listen(PORT, () => {
-    console.log(`🟢 Vera Proxy listening on port ${PORT}`);
+  console.log(`Proxy server running on port ${PORT}`);
 });
