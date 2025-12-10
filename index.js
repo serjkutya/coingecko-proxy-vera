@@ -1,4 +1,4 @@
-// === Universal CoinGecko Proxy (Vera PRO V3) ===
+// === Universal CoinGecko Proxy (Vera PRO V3 — Render FIX) ===
 
 const express = require('express');
 const axios = require('axios');
@@ -19,27 +19,28 @@ app.get('/api/ping', (req, res) => {
   res.json({ "gecko_says": "(V3) На Луну!" });
 });
 
-// === ГЛАВНЫЙ УНИВЕРСАЛЬНЫЙ ПРОКСИ ===
-// Поддерживает ЛЮБОЙ путь вида /api/.../.../...
-app.get('/api/*', async (req, res) => {
-  try {
-    // Получаем всё после "/api/"
-    const endpoint = req.params[0];
+// === ГЛАВНЫЙ ПРОКСИ — фикс для Render ===
+// ⚠ Никаких "/api/*". Только "/api/*" через regexp, как рекомендует Render
+app.get(/^\/api\/(.+)/, async (req, res) => {
 
-    // Собираем URL
+  try {
+    const endpoint = req.params[0];         // ← безопасно извлекаем путь
+    const query = req.query;
+
     const url = `https://api.coingecko.com/api/v3/${endpoint}`;
 
-    // Пересылаем query параметры как есть
-    const response = await axios.get(url, { params: req.query });
+    const response = await axios.get(url, { params: query });
 
     res.json(response.data);
 
   } catch (error) {
-    console.error("Proxy Error:", error.message);
-    res.status(500).json({ error: "Proxy request failed" });
+    res.status(500).json({
+      error: "Ошибка при запросе к CoinGecko",
+      details: error.message
+    });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Vera Proxy running on port ${PORT}`);
+  console.log(`🚀 Vera CoinGecko Proxy running on port ${PORT}`);
 });
