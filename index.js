@@ -1,4 +1,5 @@
-// === VeraSuperPremium+ CoinGecko PRO Proxy (Render) ===
+// === VeraSuperPremium+ CoinGecko Proxy (BASIC plan compatible) ===
+
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
@@ -9,75 +10,55 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// ВАЖНО: ключ задаём в Render ENV: CG_PRO_KEY
-const CG_PRO_KEY = process.env.CG_PRO_KEY || "";
-// Используем PRO endpoint (под твой тариф с ключом)
-const COINGECKO_BASE = "https://pro-api.coingecko.com/api/v3";
+// 🔑 КЛЮЧ из Render → Environment
+const CG_API_KEY = process.env.CG_API_KEY || "";
 
-// --- Healthcheck (не CoinGecko) ---
-app.get("/", (req, res) => res.send("✅ Vera CoinGecko Proxy is running"));
-app.get("/api/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
+// ❗ BASIC / PAID API (НЕ PRO)
+const COINGECKO_BASE = "https://api.coingecko.com/api/v3";
 
-// --- Реальный ping CoinGecko (через ключ) ---
-app.get("/api/cg/ping", async (req, res) => {
-  try {
-    if (!CG_PRO_KEY) {
-      return res.status(500).json({ error: "CG_PRO_KEY is not set on server (ENV). Add it and redeploy." });
-    }
-    const r = await axios.get(`${COINGECKO_BASE}/ping`, {
-      headers: { "x-cg-pro-api-key": CG_PRO_KEY },
-      timeout: 20000,
-    });
-    return res.status(200).json(r.data);
-  } catch (e) {
-    const status = e.response?.status || 500;
-    return res.status(status).json({ error: "CoinGecko ping failed", details: e.message });
-  }
+// --- health ---
+app.get("/", (req, res) => {
+  res.send("✅ VeraSuperPremium+ CoinGecko Proxy ONLINE");
 });
 
-// --- Главный прокси: всё, что после /api/... уходит в CoinGecko PRO ---
+// --- local ping ---
+app.get("/api/ping", (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// --- universal proxy ---
 app.use("/api", async (req, res) => {
   try {
-    if (!CG_PRO_KEY) {
-      return res.status(500).json({ error: "CG_PRO_KEY is not set on server (ENV). Add it and redeploy." });
+    const path = req.originalUrl.replace("/api", "");
+    const url = `${COINGECKO_BASE}${path}`;
+
+    if (!CG_API_KEY) {
+      return res.status(500).json({
+        error: "CG_API_KEY not set in Render ENV"
+      });
     }
 
-    // Не даём /api/ping и /api/cg/ping сюда попасть
-    if (req.path === "/ping" || req.path === "/cg/ping") {
-      return res.status(404).json({ error: "Use /api/ping or /api/cg/ping" });
-    }
-
-    const url = `${COINGECKO_BASE}${req.path}`;
-
-    const axiosConfig = {
-      method: req.method,
-      url,
-      headers: {
-        "x-cg-pro-api-key": CG_PRO_KEY,
-        "accept": "application/json",
-      },
-      params: req.query,           // все query параметры пробрасываем как есть
+    const response = await axios.get(url, {
+      params: req.query,
       timeout: 20000,
-      validateStatus: () => true,  // чтобы отдавать клиенту реальный статус
-    };
+      headers: {
+        "accept": "application/json",
+        "x-cg-demo-api-key": CG_API_KEY
+      }
+    });
 
-    // POST/PUT body
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      axiosConfig.data = req.body;
-      axiosConfig.headers["content-type"] = "application/json";
-    }
+    res.status(response.status).json(response.data);
 
-    const response = await axios(axiosConfig);
-    return res.status(response.status).send(response.data);
-  } catch (e) {
-    const status = e.response?.status || 500;
-    return res.status(status).json({
-      error: "Proxy request failed",
-      details: e.message,
+  } catch (err) {
+    const status = err.response?.status || 500;
+    res.status(status).json({
+      error: "Proxy error",
+      status,
+      message: err.response?.data || err.message
     });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Vera PRO proxy running on port ${PORT}`);
+  console.log(`🚀 Vera Proxy running on port ${PORT}`);
 });
