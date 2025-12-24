@@ -1,109 +1,83 @@
-// === VeraSuperPremium+ — CoinGecko PRO Proxy (Stage 1.1) ===
-// Цель: стабильные запросы, правильная авторизация PRO, ретраи при 429/5xx.
-// Важно: ключ хранится на сервере (ENV), в Google Apps Script ключ НЕ нужен.
-
+// === VeraSuperPremium+ CoinGecko PRO Proxy (Render) ===
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-// В Render/Node: добавь переменную окружения:
-const CG_PRO_KEY = process.env.CG_PRO_KEY; // <-- сюда ключ CoinGecko PRO
-const CG_BASE = "https://pro-api.coingecko.com/api/v3";
+// ВАЖНО: ключ задаём в Render ENV: CG_PRO_KEY
+const CG_PRO_KEY = process.env.CG_PRO_KEY || "";
+// Используем PRO endpoint (под твой тариф с ключом)
+const COINGECKO_BASE = "https://pro-api.coingecko.com/api/v3";
 
-// Тюнинг
-const TIMEOUT_MS = 20000;
-const MAX_RETRIES = 4;
+// --- Healthcheck (не CoinGecko) ---
+app.get("/", (req, res) => res.send("✅ Vera CoinGecko Proxy is running"));
+app.get("/api/ping", (req, res) => res.json({ ok: true, ts: Date.now() }));
 
-// Утилита: ожидание
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// Ретраи с backoff (429/5xx)
-async function fetchWithRetry(url, params) {
-  let lastErr;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const resp = await axios.get(url, {
-        params,
-        timeout: TIMEOUT_MS,
-        headers: {
-          accept: "application/json",
-          "x-cg-pro-api-key": CG_PRO_KEY,
-          // Чуть повышает стабильность:
-          "user-agent": "VeraSuperPremiumProxy/1.1"
-        }
-      });
-
-      return resp.data;
-    } catch (e) {
-      lastErr = e;
-
-      const status = e?.response?.status;
-      const retryAfter = Number(e?.response?.headers?.["retry-after"] || 0);
-
-      // ретраим только 429 и 5xx
-      const shouldRetry = status === 429 || (status >= 500 && status <= 599);
-
-      if (!shouldRetry || attempt === MAX_RETRIES) break;
-
-      // backoff: либо retry-after, либо экспонента
-      const backoff = retryAfter > 0
-        ? (retryAfter * 1000)
-        : (800 * Math.pow(2, attempt)); // 800, 1600, 3200, 6400...
-
-      await sleep(backoff);
+// --- Реальный ping CoinGecko (через ключ) ---
+app.get("/api/cg/ping", async (req, res) => {
+  try {
+    if (!CG_PRO_KEY) {
+      return res.status(500).json({ error: "CG_PRO_KEY is not set on server (ENV). Add it and redeploy." });
     }
+    const r = await axios.get(`${COINGECKO_BASE}/ping`, {
+      headers: { "x-cg-pro-api-key": CG_PRO_KEY },
+      timeout: 20000,
+    });
+    return res.status(200).json(r.data);
+  } catch (e) {
+    const status = e.response?.status || 500;
+    return res.status(status).json({ error: "CoinGecko ping failed", details: e.message });
   }
+});
 
-  // Если дошли сюда — ошибка
-  const status = lastErr?.response?.status || 500;
-  const data = lastErr?.response?.data || { error: "Proxy fetch failed" };
-  const msg = typeof data === "string" ? data : JSON.stringify(data);
-
-  const err = new Error(`CG_PROXY_ERROR status=${status} body=${msg}`);
-  err.httpStatus = status;
-  throw err;
-}
-
-// Health
-app.get("/", (_req, res) => res.send("✅ Vera PRO Proxy is running"));
-app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
-
-// Главный прокси: /api/*  ->  https://pro-api.coingecko.com/api/v3/*
+// --- Главный прокси: всё, что после /api/... уходит в CoinGecko PRO ---
 app.use("/api", async (req, res) => {
   try {
     if (!CG_PRO_KEY) {
-      return res.status(500).json({
-        error: "CG_PRO_KEY is not set on server (ENV). Add it and redeploy."
-      });
+      return res.status(500).json({ error: "CG_PRO_KEY is not set on server (ENV). Add it and redeploy." });
     }
 
-    // Оригинальный путь после /api
-    const tail = req.originalUrl.replace(/^\/api/, ""); // например: /coins/bitcoin/market_chart?...
-    const url = `${CG_BASE}${tail.split("?")[0]}`;
+    // Не даём /api/ping и /api/cg/ping сюда попасть
+    if (req.path === "/ping" || req.path === "/cg/ping") {
+      return res.status(404).json({ error: "Use /api/ping or /api/cg/ping" });
+    }
 
-    const data = await fetchWithRetry(url, req.query);
+    const url = `${COINGECKO_BASE}${req.path}`;
 
-    // Отдаём как есть
-    res.status(200).json(data);
+    const axiosConfig = {
+      method: req.method,
+      url,
+      headers: {
+        "x-cg-pro-api-key": CG_PRO_KEY,
+        "accept": "application/json",
+      },
+      params: req.query,           // все query параметры пробрасываем как есть
+      timeout: 20000,
+      validateStatus: () => true,  // чтобы отдавать клиенту реальный статус
+    };
+
+    // POST/PUT body
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      axiosConfig.data = req.body;
+      axiosConfig.headers["content-type"] = "application/json";
+    }
+
+    const response = await axios(axiosConfig);
+    return res.status(response.status).send(response.data);
   } catch (e) {
-    const status = e.httpStatus || 500;
-    res.status(status).json({
-      error: "Proxy error",
-      message: e.message,
-      ts: Date.now()
+    const status = e.response?.status || 500;
+    return res.status(status).json({
+      error: "Proxy request failed",
+      details: e.message,
     });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Vera PRO Proxy listening on :${PORT}`);
+  console.log(`✅ Vera PRO proxy running on port ${PORT}`);
 });
