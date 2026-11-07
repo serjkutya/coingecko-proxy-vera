@@ -7,6 +7,7 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 
+const { createOrderBookHandler } = require("./orderbook");
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -49,6 +50,9 @@ app.get("/api/cg/ping", async (req, res) => {
     });
   }
 });
+
+// Public order-book research route; must precede the existing /api catch-all.
+app.get("/api/vera/orderbook", createOrderBookHandler());
 
 // --- УНИВЕРСАЛЬНЫЙ ПРОКСИ: всё что после /api/ -> уходит в CoinGecko /api/v3 ---
 // Пример:
@@ -93,3 +97,4 @@ app.use("/api", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Vera Proxy running on port ${PORT}`);
 });
+
