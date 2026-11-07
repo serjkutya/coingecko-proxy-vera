@@ -65,8 +65,15 @@ function measureBook(book, receivedMs) {
 
 function createBookService({ fetchImpl = globalThis.fetch, now = Date.now } = {}) {
   const cache = new Map();
-  let inFlight = 0, used = 0, windowAt = now(), blockedUntil = 0;
-  function fault(code, status) { const e = new Error(code); e.status = status; return e; }
+  let inFlight = 0, used = 0, windowAt = now(), blockedUntil = 0, blockedCode = null;
+  function fault(code, status) {
+    const e = new Error(code); e.status = status;
+    if (blockedUntil > now()) {
+      e.retryAfterSeconds = Math.ceil((blockedUntil - now()) / 1000);
+      e.blockedUntilMs = blockedUntil; e.upstreamStatus = blockedCode;
+    }
+    return e;
+  }
   return async function getBook(symbol) {
     if (typeof symbol !== 'string' || !/^[A-Z0-9]{1,20}USDT$/.test(symbol)) throw fault('INVALID_SYMBOL', 400);
     const t = now();
@@ -84,9 +91,17 @@ function createBookService({ fetchImpl = globalThis.fetch, now = Date.now } = {}
       const response = await fetchImpl(`${ENDPOINT}?symbol=${encodeURIComponent(symbol)}&limit=500`,
         { signal: abort.signal, redirect: 'error', headers: { Accept: 'application/json' } });
       if (!response.ok) {
-        const retry = Number(response.headers?.get('retry-after'));
-        if ([403, 418, 429, 451].includes(response.status))
-          blockedUntil = now() + Math.max(60000, Math.min(Number.isFinite(retry) ? retry * 1000 : 60000, 3600000));
+        const rawRetry = response.headers?.get('retry-after');
+        const retry = typeof rawRetry === 'string' && /^\d+$/.test(rawRetry.trim()) ? Number(rawRetry) : NaN;
+        if ([403, 418, 429, 451].includes(response.status)) {
+          // Never shorten the provider's deadline. Missing ban metadata requires
+          // a conservative pause, not a new request after only one minute.
+          const fallback = response.status === 418 ? 3 * 86400000 : 60000;
+          const delay = Number.isSafeInteger(retry) && retry > 0 && Number.isSafeInteger(now() + retry * 1000)
+            ? Math.max(60000, retry * 1000) : fallback;
+          blockedUntil = Math.max(blockedUntil, now() + delay);
+          blockedCode = response.status;
+        }
         throw fault(`UPSTREAM_HTTP_${response.status}`, 502);
       }
       const book = await response.json(), end = now();
@@ -108,7 +123,12 @@ function createOrderBookHandler(options) {
   return async function orderBookHandler(req, res) {
     res.set('Cache-Control', 'no-store');
     try { res.json(await getBook(req.query.symbol)); }
-    catch (e) { res.status(e.status || 500).json({ mode: 'SHADOW_ONLY', status: 'UNAVAILABLE', reason: e.message }); }
+    catch (e) {
+      if (e.retryAfterSeconds) res.set('Retry-After', String(e.retryAfterSeconds));
+      res.status(e.status || 500).json({ mode: 'SHADOW_ONLY', status: 'UNAVAILABLE', reason: e.message,
+        ...(e.retryAfterSeconds ? {retryAfterSeconds:e.retryAfterSeconds,
+          blockedUntilMs:e.blockedUntilMs, upstreamStatus:e.upstreamStatus} : {}) });
+    }
   };
 }
 
