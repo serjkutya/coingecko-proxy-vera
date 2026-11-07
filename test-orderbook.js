@@ -66,3 +66,34 @@ test('hard budget protects upstream weight and returns no fake measurements',asy
   for(let i=0;i<60;i++) await get(`X${i}USDT`);
   await assert.rejects(get('EXTRAUSDT'),/LOCAL_BUDGET_OR_BUSY/);
 });
+
+test('a two-hour Retry-After is never shortened to one hour',async()=>{
+ let time=T,calls=0;
+ const get=createBookService({now:()=>time,fetchImpl:async()=>{
+  calls++;return {ok:false,status:418,headers:{get:()=> '7200'}};
+ }});
+ await assert.rejects(get('BTCUSDT'),/UPSTREAM_HTTP_418/);
+ time=T+3600001;
+ await assert.rejects(get('ETHUSDT'),/UPSTREAM_BACKOFF/);
+ assert.equal(calls,1);
+});
+
+test('ban fallback is conservative and expiry resumes without fabricated data',async()=>{
+ for(const header of [null,'','0','-1','NaN','99999999999999999999999999']) {
+  let time=T,calls=0;
+  const get=createBookService({now:()=>time,fetchImpl:async()=>{calls++;return {ok:false,status:418,headers:{get:()=>header}};}});
+  await assert.rejects(get('BTCUSDT'),e=>e.retryAfterSeconds===259200&&e.upstreamStatus===418);
+  time=T+86400000;
+  await assert.rejects(get('ETHUSDT'),e=>e.message==='UPSTREAM_BACKOFF'&&e.retryAfterSeconds===172800);
+  assert.equal(calls,1);
+ }
+});
+test('positive provider deadline is respected until its boundary',async()=>{
+ let time=T,calls=0;
+ const get=createBookService({now:()=>time,fetchImpl:async()=>{
+  calls++;return calls===1?{ok:false,status:429,headers:{get:()=> '7200'}}:reply({...fixture(),T:time,E:time});
+ }});
+ await assert.rejects(get('BTCUSDT'),e=>e.blockedUntilMs===T+7200000);
+ time=T+7200000-1;await assert.rejects(get('ETHUSDT'),/UPSTREAM_BACKOFF/);assert.equal(calls,1);
+ time++;assert.equal((await get('BTCUSDT')).status,'OK');assert.equal(calls,2);
+});
